@@ -23,9 +23,34 @@ const DEFAULT_INTERNAL_MODEL = "gpt-4o-mini";
 // Environment variables interface
 export interface Env {
   RAYCAST_BEARER_TOKEN: string;
+  RAYCAST_SIGNATURE_SECRET: string; // New: HMAC signature secret
   API_KEY?: string;
   ADVANCED?: string; // 'false' filters premium models
   INCLUDE_DEPRECATED?: string; // 'false' filters deprecated models
+}
+
+/**
+ * Generates HMAC-SHA256 signature for Raycast API requests.
+ */
+async function generateSignature(body: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const bodyData = encoder.encode(body);
+  
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, bodyData);
+  
+  // Convert to hex string
+  return Array.from(new Uint8Array(signature))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**
@@ -92,7 +117,7 @@ async function fetchModels(env: Env): Promise<Map<string, ModelInfo>> {
 }
 
 /**
- * Generates standard headers for Raycast API requests.
+ * Generates standard headers for Raycast API requests (without signature).
  */
 function getRaycastHeaders(env: Env) {
   return {
@@ -103,6 +128,29 @@ function getRaycastHeaders(env: Env) {
     "Accept-Language": "en-US,en;q=0.9",
     "Content-Type": "application/json",
     Connection: "close",
+  };
+}
+
+/**
+ * Generates headers for Raycast API requests with HMAC signature.
+ */
+async function getRaycastHeadersWithSignature(
+  env: Env,
+  body: string
+): Promise<Record<string, string>> {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = await generateSignature(body, env.RAYCAST_SIGNATURE_SECRET);
+  
+  return {
+    Host: "backend.raycast.com",
+    Accept: "*/*",
+    "User-Agent": USER_AGENT,
+    Authorization: `Bearer ${env.RAYCAST_BEARER_TOKEN}`,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Content-Type": "application/json",
+    Connection: "keep-alive",
+    "X-Raycast-Timestamp": timestamp,
+    "X-Raycast-Signature-v2": signature,
   };
 }
 
@@ -244,10 +292,13 @@ async function handleChatCompletions(
       tools: [],
     };
 
+    const requestBody = JSON.stringify(raycastRequest);
+    const headers = await getRaycastHeadersWithSignature(env, requestBody);
+
     const raycastResponse = await fetch(RAYCAST_API_URL, {
       method: "POST",
-      headers: getRaycastHeaders(env),
-      body: JSON.stringify(raycastRequest),
+      headers: headers,
+      body: requestBody,
     });
 
     console.log(`Raycast API response status: ${raycastResponse.status}`);
@@ -512,6 +563,15 @@ export default {
       console.error("FATAL: RAYCAST_BEARER_TOKEN is not configured.");
       return errorResponse(
         "Server configuration error: Missing Raycast credentials",
+        500,
+        "server_error",
+      );
+    }
+
+    if (!env.RAYCAST_SIGNATURE_SECRET) {
+      console.error("FATAL: RAYCAST_SIGNATURE_SECRET is not configured.");
+      return errorResponse(
+        "Server configuration error: Missing Raycast signature secret",
         500,
         "server_error",
       );
