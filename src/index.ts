@@ -30,11 +30,24 @@ export interface Env {
 }
 
 /**
+ * Converts a hex string to Uint8Array.
+ */
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+/**
  * Generates HMAC-SHA256 signature for Raycast API requests.
+ * The secret is expected to be a hex-encoded string.
  */
 async function generateSignature(body: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
+  // Secret is hex-encoded, convert to bytes
+  const keyData = hexToBytes(secret);
   const bodyData = encoder.encode(body);
   
   const cryptoKey = await crypto.subtle.importKey(
